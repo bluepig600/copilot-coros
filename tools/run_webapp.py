@@ -14,7 +14,7 @@ from flask import Flask, request, render_template_string, send_file, url_for
 from markupsafe import escape
 from werkzeug.utils import secure_filename
 
-from coros_uploader import upload_transfer_sh, upload_anonfiles, generate_qr, usb_copy, ble_transfer
+from coros_uploader import upload_transfer_sh, upload_anonfiles, generate_qr, usb_copy, ble_transfer, BleakScanner
 try:
     from coros_publish import publish_coros_watchface, mobile_request
     PUBLISH_IMPORT_ERROR = None
@@ -40,8 +40,20 @@ INDEX_HTML = """<!doctype html>
     <option value=usb>usb</option>
     <option value=ble>ble</option>
   </select>
-  <p>Mount path (for USB): <input name=mount>
-  <p>BLE device address: <input name=device_address>
+  <p>Mount path (for USB):
+    <select name=mount id="mount-select">
+      <option value="">(none)</option>
+    </select>
+    <button type="button" id="refresh-mounts">Refresh mounts</button>
+  </p>
+  <p>Custom mount path: <input name=mount_custom placeholder="/media/watch"></p>
+  <p>BLE device:
+    <select name=device_address id="ble-device-select">
+      <option value="">(none)</option>
+    </select>
+    <button type="button" id="refresh-ble">Scan BLE</button>
+  </p>
+  <p>Custom BLE address: <input name=device_address_custom placeholder="AA:BB:CC:DD:EE:FF"></p>
   <p>Background image id (publish): <input name=background_image_id value=0>
   <p>Firmware type (publish): <input name=firmware_type value="COROS W332">
   <p>Name (publish): <input name=name value="My COROS Face">
@@ -135,8 +147,104 @@ INDEX_HTML = """<!doctype html>
 
   draw();
 })();
+
+(() => {
+  const mountSelect = document.getElementById("mount-select");
+  const bleSelect = document.getElementById("ble-device-select");
+  const refreshMounts = document.getElementById("refresh-mounts");
+  const refreshBle = document.getElementById("refresh-ble");
+
+  function setOptions(select, values, placeholder) {
+    select.innerHTML = "";
+    const head = document.createElement("option");
+    head.value = "";
+    head.textContent = placeholder;
+    select.appendChild(head);
+    values.forEach((item) => {
+      const opt = document.createElement("option");
+      opt.value = item.value;
+      opt.textContent = item.label;
+      select.appendChild(opt);
+    });
+  }
+
+  async function loadMounts() {
+    try {
+      const resp = await fetch("/devices/mounts");
+      const data = await resp.json();
+      const values = (data.mounts || []).map((mountPath) => ({ value: mountPath, label: mountPath }));
+      setOptions(mountSelect, values, values.length ? "(select mount path)" : "(no mounts found)");
+    } catch {
+      setOptions(mountSelect, [], "(failed to load mounts)");
+    }
+  }
+
+  async function loadBle() {
+    try {
+      const resp = await fetch("/devices/ble");
+      const data = await resp.json();
+      const values = (data.devices || []).map((d) => ({
+        value: d.address || "",
+        label: `${d.name || "Unknown"} (${d.address || "no address"})`
+      })).filter((d) => d.value);
+      setOptions(bleSelect, values, values.length ? "(select BLE device)" : "(no BLE devices found)");
+    } catch {
+      setOptions(bleSelect, [], "(failed to scan BLE)");
+    }
+  }
+
+  refreshMounts.addEventListener("click", loadMounts);
+  refreshBle.addEventListener("click", loadBle);
+  loadMounts();
+})();
 </script>
 """
+
+_IGNORED_MOUNT_FILESYSTEMS = {
+    "proc", "sysfs", "tmpfs", "devtmpfs", "devpts", "cgroup", "cgroup2", "securityfs",
+    "pstore", "autofs", "debugfs", "mqueue", "hugetlbfs", "tracefs", "configfs",
+    "fusectl", "overlay", "squashfs", "rpc_pipefs", "nsfs", "binfmt_misc",
+}
+
+def _mount_from_proc_line(line: str):
+    parts = line.strip().split()
+    if len(parts) < 3:
+        return None
+    mount_path = parts[1].replace("\\040", " ")
+    fs_type = parts[2]
+    if fs_type in _IGNORED_MOUNT_FILESYSTEMS:
+        return None
+    if mount_path in ("/", "/boot", "/boot/efi"):
+        return None
+    if mount_path.startswith(("/media", "/mnt", "/run/media", "/Volumes")):
+        return mount_path
+    return None
+
+def discover_mount_paths():
+    paths = set()
+    proc_mounts = "/proc/mounts"
+    if os.path.isfile(proc_mounts):
+        with open(proc_mounts, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                path = _mount_from_proc_line(line)
+                if path:
+                    paths.add(path)
+    for base in ("/media", "/mnt", "/run/media"):
+        if os.path.isdir(base):
+            for entry in os.scandir(base):
+                if entry.is_dir():
+                    paths.add(entry.path)
+    return sorted(paths)
+
+async def discover_ble_devices():
+    if BleakScanner is None:
+        return []
+    devices = await BleakScanner.discover(timeout=4.0)
+    return [
+        {"name": (d.name or "").strip(), "address": (d.address or "").strip()}
+        for d in devices
+        if getattr(d, "address", None)
+    ]
 
 @app.route('/')
 def index():
@@ -158,13 +266,13 @@ def upload():
         safe_url = escape(url)
         return f"Uploaded: <a href=\"{safe_url}\">{safe_url}</a><br><img src=\"/qr\">"
     if mode == 'usb':
-        mount = request.form.get('mount')
+        mount = (request.form.get('mount') or request.form.get('mount_custom') or '').strip()
         if not mount:
             return "Mount required", 400
         dest = usb_copy(path, mount)
         return f"Copied to {escape(dest)}"
     if mode == 'ble':
-        addr = request.form.get('device_address')
+        addr = (request.form.get('device_address') or request.form.get('device_address_custom') or '').strip() or None
         # run BLE transfer in background thread to avoid blocking flask
         def run_ble():
             asyncio.run(ble_transfer(path, device_address=addr))
@@ -213,6 +321,17 @@ def qr():
     if not os.path.exists(qr_path):
         return "No QR", 404
     return send_file(qr_path, mimetype='image/png')
+
+@app.route('/devices/mounts')
+def devices_mounts():
+    return {"mounts": discover_mount_paths()}
+
+@app.route('/devices/ble')
+def devices_ble():
+    try:
+        return {"devices": asyncio.run(discover_ble_devices())}
+    except Exception as e:
+        return {"error": str(e), "devices": []}, 500
 
 @app.route('/editor/save', methods=['POST'])
 def editor_save():

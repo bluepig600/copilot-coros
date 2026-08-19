@@ -15,8 +15,12 @@ import time
 from typing import Optional
 
 import requests
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
+try:
+    from Crypto.Cipher import AES
+    from Crypto.Util.Padding import pad
+except ModuleNotFoundError:
+    from Cryptodome.Cipher import AES
+    from Cryptodome.Util.Padding import pad
 import qrcode
 
 # Constants taken from CorosLink
