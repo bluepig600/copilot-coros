@@ -14,6 +14,13 @@ Quick start
 
    Open http://localhost:8080 in your browser.
 
+Watch face editor (simple)
+
+- The web app includes a simple watch face editor section inspired by CorosLink.
+- Upload a background image, set text/position/color, and click **Save PNG to server**.
+- Saved files are written to `tools/uploads/` and exposed at `/uploads/<filename>`.
+- You can then upload the saved PNG using the existing upload form/workflow.
+
 CLI usage
 
 - Upload and generate QR (transfer.sh):
