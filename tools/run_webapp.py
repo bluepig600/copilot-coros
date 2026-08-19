@@ -11,10 +11,17 @@ import asyncio
 import base64
 import binascii
 from flask import Flask, request, render_template_string, send_file, url_for
+from markupsafe import escape
 from werkzeug.utils import secure_filename
 
 from coros_uploader import upload_transfer_sh, upload_anonfiles, generate_qr, usb_copy, ble_transfer
-from coros_publish import publish_coros_watchface, mobile_request
+try:
+    from coros_publish import publish_coros_watchface, mobile_request
+    PUBLISH_IMPORT_ERROR = None
+except ModuleNotFoundError as e:
+    publish_coros_watchface = None
+    mobile_request = None
+    PUBLISH_IMPORT_ERROR = str(e)
 
 UPLOAD_DIR = os.path.join(os.getcwd(), "tools", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -148,13 +155,14 @@ def upload():
         url = upload_transfer_sh(path)
         qr_path = os.path.join(app.config['UPLOAD_FOLDER'], 'qr.png')
         generate_qr(url, qr_path)
-        return f"Uploaded: <a href=\"{url}\">{url}</a><br><img src=\"/qr\">"
+        safe_url = escape(url)
+        return f"Uploaded: <a href=\"{safe_url}\">{safe_url}</a><br><img src=\"/qr\">"
     if mode == 'usb':
         mount = request.form.get('mount')
         if not mount:
             return "Mount required", 400
         dest = usb_copy(path, mount)
-        return f"Copied to {dest}"
+        return f"Copied to {escape(dest)}"
     if mode == 'ble':
         addr = request.form.get('device_address')
         # run BLE transfer in background thread to avoid blocking flask
@@ -164,6 +172,12 @@ def upload():
         t.start()
         return "BLE transfer started; watch console for progress"
     if mode == 'publish':
+        if PUBLISH_IMPORT_ERROR:
+            return (
+                "Publish mode is unavailable because dependencies are missing "
+                f"({escape(PUBLISH_IMPORT_ERROR)}). Install with: "
+                "<code>python -m pip install -r tools/requirements.txt</code>."
+            ), 500
         # interactive: ask for credentials and then publish
         name = request.form.get('name')
         firmware = request.form.get('firmware_type')
@@ -173,12 +187,12 @@ def upload():
             Email: <input name=email><br>
             Password: <input name=password type=password><br>
             Region (us/eu/cn): <input name=region value=us><br>
-            <input type=hidden name=archive_path value="%s">
-            <input type=hidden name=name value="%s">
-            <input type=hidden name=firmware value="%s">
-            <input type=hidden name=bgid value="%s">
+            <input type=hidden name=archive_path value="{{ archive_path|e }}">
+            <input type=hidden name=name value="{{ name|e }}">
+            <input type=hidden name=firmware value="{{ firmware|e }}">
+            <input type=hidden name=bgid value="{{ bgid }}">
             <input type=submit value="Publish">
-        </form>''' % (path, name, firmware, bgid))
+        </form>''', archive_path=path, name=name or "", firmware=firmware or "", bgid=bgid)
     return "Unknown mode", 400
 
 @app.route('/do_publish', methods=['POST'])
