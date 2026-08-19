@@ -330,8 +330,8 @@ def devices_mounts():
 def devices_ble():
     try:
         return {"devices": asyncio.run(discover_ble_devices())}
-    except Exception as e:
-        return {"error": str(e), "devices": []}, 500
+    except Exception:
+        return {"error": "BLE scan failed.", "devices": []}, 500
 
 @app.route('/editor/save', methods=['POST'])
 def editor_save():
