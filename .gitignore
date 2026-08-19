@@ -1,0 +1,25 @@
+# Byte-compiled / virtualenv
+__pycache__/
+venv/
+env/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# PyInstaller
+/*.manifest
+/*.spec
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

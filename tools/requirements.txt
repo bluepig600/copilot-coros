@@ -1,0 +1,7 @@
+# tools/requirements.txt
+requests>=2.30
+qrcode[pil]>=7.3
+pillow>=10.0
+bleak>=0.20
+flask>=2.2
+pytest>=7.0
